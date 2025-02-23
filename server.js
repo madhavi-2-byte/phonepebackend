@@ -3,24 +3,23 @@ const express = require("express");
 const axios = require("axios");
 const crypto = require("crypto");
 const cors = require("cors");
-const mongoose = require("mongoose");
 
 const app = express();
 app.use(express.json());
 app.use(cors());
 
+// Load environment variables
 const MERCHANT_KEY = process.env.MERCHANT_KEY;
 const MERCHANT_ID = process.env.MERCHANT_ID;
 const MERCHANT_BASE_URL = "https://api-preprod.phonepe.com/apis/pg-sandbox/pg/v1/pay";
 const MERCHANT_STATUS_URL = "https://api-preprod.phonepe.com/apis/pg-sandbox/pg/v1/status";
-const SALT_INDEX = 1; // Keep it as 1 for testing
-const MONGO_URI = process.env.MONGO_URI;
+const SALT_INDEX = 1; // Use 1 for testing
 
-// Connect to MongoDB
-mongoose
-  .connect(MONGO_URI, { useNewUrlParser: true, useUnifiedTopology: true })
-  .then(() => console.log("✅ MongoDB Connected"))
-  .catch((err) => console.error("❌ MongoDB connection error:", err));
+// Validate environment variables
+if (!MERCHANT_KEY || !MERCHANT_ID) {
+  console.error("❌ ERROR: MERCHANT_KEY or MERCHANT_ID is missing in .env file!");
+  process.exit(1);
+}
 
 // Generate SHA256 Checksum
 const generateChecksum = (data, key) => {
@@ -28,10 +27,10 @@ const generateChecksum = (data, key) => {
   return hash + "###" + SALT_INDEX;
 };
 
-// Route to Initiate Payment
+// 📌 Route to Initiate Payment
 app.post("/payment/initiate", async (req, res) => {
   try {
-    console.log("📩 Received payment request:", req.body); // Debugging
+    console.log("📩 Received payment request:", req.body);
 
     const { amount } = req.body;
     if (!amount || isNaN(amount) || amount <= 0) {
@@ -39,7 +38,7 @@ app.post("/payment/initiate", async (req, res) => {
     }
 
     const transactionId = `TXN${Date.now()}`;
-    const redirectUrl = "https://your-app.com/payment-success"; // Change this URL
+    const redirectUrl = "https://your-app.com/payment-success"; // Replace with actual success URL
 
     const payload = {
       merchantId: MERCHANT_ID,
@@ -47,17 +46,13 @@ app.post("/payment/initiate", async (req, res) => {
       amount: amount * 100, // Convert to paise
       redirectUrl,
       callbackUrl: redirectUrl,
-      mobileNumber: "9999999999", // Replace with actual user number
-      paymentInstrument: {
-        type: "PAY_PAGE",
-      },
+      paymentInstrument: { type: "PAY_PAGE" },
     };
 
     const payloadBase64 = Buffer.from(JSON.stringify(payload)).toString("base64");
     const checksum = generateChecksum(payloadBase64 + "/pg/v1/pay", MERCHANT_KEY);
 
-    console.log("🔑 Payload:", payload);
-    console.log("🔒 Checksum:", checksum);
+    console.log("📨 Sending request to PhonePe...");
 
     const response = await axios.post(
       MERCHANT_BASE_URL,
@@ -71,26 +66,32 @@ app.post("/payment/initiate", async (req, res) => {
       }
     );
 
-    console.log("📨 PhonePe Response:", response.data);
+    console.log("📨 Full PhonePe Response:", JSON.stringify(response.data, null, 2));
 
-    if (response.data.success && response.data.data.instrumentResponse.redirectInfo.url) {
-      return res.json({
-        success: true,
-        paymentUrl: response.data.data.instrumentResponse.redirectInfo.url,
-      });
+    // Extract Payment URL
+    const paymentUrl = response.data?.data?.instrumentResponse?.redirectInfo?.url || "";
+
+    if (response.data.success && paymentUrl) {
+      console.log("✅ Payment URL:", paymentUrl);
+      return res.json({ success: true, paymentUrl });
     } else {
+      console.error("❌ Payment URL not found in response.");
       return res.status(400).json({
         success: false,
-        message: response.data.message || "Payment initiation failed",
+        message: "Payment URL not received from PhonePe",
+        response: response.data,
       });
     }
   } catch (error) {
     console.error("❌ PhonePe API Error:", error.response?.data || error.message);
-    res.status(500).json({ success: false, error: error.response?.data || error.message });
+    return res.status(500).json({
+      success: false,
+      error: error.response?.data || error.message,
+    });
   }
 });
 
-// Route to Check Payment Status
+// 📌 Route to Check Payment Status
 app.get("/payment/status/:transactionId", async (req, res) => {
   try {
     const { transactionId } = req.params;
@@ -103,9 +104,15 @@ app.get("/payment/status/:transactionId", async (req, res) => {
       headers: { "Content-Type": "application/json", "X-VERIFY": checksum, "X-MERCHANT-ID": MERCHANT_ID },
     });
 
-    res.json(response.data);
+    console.log("📨 Payment Status Response:", response.data);
+
+    if (response.data.success && response.data.code === "PAYMENT_SUCCESS") {
+      return res.json({ success: true, message: "Payment successful" });
+    } else {
+      return res.status(400).json({ success: false, message: "Payment not successful", response: response.data });
+    }
   } catch (error) {
-    console.error("❌ PhonePe API Error:", error.response?.data || error.message);
+    console.error("❌ Error:", error.response?.data || error.message);
     res.status(500).json({ success: false, error: error.response?.data || error.message });
   }
 });
